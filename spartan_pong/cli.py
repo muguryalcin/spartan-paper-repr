@@ -157,6 +157,7 @@ def cmd_smoke(args: argparse.Namespace) -> None:
         device=args.device,
     )
     for model_type in ("transformer", "spartan"):
+        print(f"Training {model_type}...")
         train_model(model_type, train_path, val_path, work / model_type, model_cfg, train_cfg)
         metrics = evaluate_checkpoint(
             work / model_type / "checkpoint.pt",
@@ -435,6 +436,7 @@ def cmd_run_reproduction(args: argparse.Namespace) -> None:
     train_tokens = work / "data" / "train_tokens.npz"
     test_tokens = work / "data" / "test_tokens.npz"
 
+    print("[1/7] Generating pixel datasets...")
     if not (args.resume and train_pixels.exists()):
         generate_dataset(
             train_pixels,
@@ -443,6 +445,8 @@ def cmd_run_reproduction(args: argparse.Namespace) -> None:
             split="train",
             seed=args.seed,
         )
+    else:
+        print("  (skipping — train pixels already exist)")
     if not (args.resume and test_pixels.exists()):
         generate_dataset(
             test_pixels,
@@ -451,6 +455,9 @@ def cmd_run_reproduction(args: argparse.Namespace) -> None:
             split="test",
             seed=args.seed + 1,
         )
+    else:
+        print("  (skipping — test pixels already exist)")
+    print("[2/7] Training VAE...")
     if not (
         args.resume
         and (work / "object_vae" / "vae.pt").exists()
@@ -467,6 +474,9 @@ def cmd_run_reproduction(args: argparse.Namespace) -> None:
             device=args.device,
             resume=args.resume,
         )
+    else:
+        print("  (skipping — VAE already trained)")
+    print("  Exporting VAE reconstructions...")
     export_reconstruction_sheet(
         work / "object_vae" / "vae.pt",
         train_pixels,
@@ -475,14 +485,19 @@ def cmd_run_reproduction(args: argparse.Namespace) -> None:
         device=args.device,
         batch_size=args.vae_batch_size,
     )
+    print("[3/7] Encoding tokens with VAE...")
     if not (args.resume and train_tokens.exists()):
         encode_dataset_tokens(
             work / "object_vae" / "vae.pt", train_pixels, train_tokens, device=args.device
         )
+    else:
+        print("  (skipping — train tokens already exist)")
     if not (args.resume and test_tokens.exists()):
         encode_dataset_tokens(
             work / "object_vae" / "vae.pt", test_pixels, test_tokens, device=args.device
         )
+    else:
+        print("  (skipping — test tokens already exist)")
 
     model_cfg = ModelConfig(
         embed_dim=args.embed_dim,
@@ -499,6 +514,7 @@ def cmd_run_reproduction(args: argparse.Namespace) -> None:
         eval_every=args.eval_every,
         device=args.device,
     )
+    print("[4/7] Training transformer...")
     train_model(
         "transformer",
         train_tokens,
@@ -508,6 +524,7 @@ def cmd_run_reproduction(args: argparse.Namespace) -> None:
         transformer_cfg,
         resume=args.resume,
     )
+    print("[5/7] Computing target loss from transformer...")
     transformer_target_loss = _write_target_loss(
         work / "transformer" / "checkpoint.pt",
         train_tokens,
@@ -515,6 +532,7 @@ def cmd_run_reproduction(args: argparse.Namespace) -> None:
         args.device,
         args.batch_size,
     )
+    print(f"  target_loss = {transformer_target_loss:.6g}")
     spartan_cfg = TrainConfig(
         steps=args.dynamics_steps,
         batch_size=args.batch_size,
@@ -527,6 +545,7 @@ def cmd_run_reproduction(args: argparse.Namespace) -> None:
         sparsity_weight=args.sparsity_weight,
         device=args.device,
     )
+    print("[6/7] Training SPARTAN...")
     train_model(
         "spartan",
         train_tokens,
@@ -537,6 +556,7 @@ def cmd_run_reproduction(args: argparse.Namespace) -> None:
         resume=args.resume,
     )
 
+    print("[7/7] Evaluating models and generating report...")
     _evaluate_model_checkpoints(
         work / "transformer",
         test_tokens,
@@ -560,6 +580,7 @@ def cmd_run_reproduction(args: argparse.Namespace) -> None:
             work / "transformer" / "eval.json",
             work / "best_spartan_report.md",
         )
+    print(f"Reproduction complete. Results in {work}")
 
 
 def build_parser() -> argparse.ArgumentParser:

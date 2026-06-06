@@ -209,4 +209,5 @@ def train_model(
         checkpoint_path,
     )
     (out / "metrics.json").write_text(json.dumps(last_metrics, indent=2, sort_keys=True))
+    print(f"  {model_type} done — one_step_l2={last_metrics.get('one_step_l2', 'N/A'):.4f}, shd={last_metrics.get('shd', 'N/A')}")
     return last_metrics

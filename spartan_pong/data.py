@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from tqdm import tqdm
 
 from spartan_pong.config import N_OBJECTS, SEEN_ENVS, UNSEEN_ENVS
 
@@ -223,7 +224,7 @@ def generate_dataset(
     next_masks: list[np.ndarray] = []
 
     # Simulate the environment and collect data
-    for env_id in env_ids:
+    for env_id in tqdm(env_ids, desc="Generating dataset"):
         # N episodes per env
         for episode in range(episodes_per_env):
             state = initial_state(rng)

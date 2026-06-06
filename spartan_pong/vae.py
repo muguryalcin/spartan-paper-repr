@@ -8,7 +8,7 @@ import torch
 from PIL import Image
 from torch import Tensor, nn
 from torch.nn import functional as F
-from tqdm import trange
+from tqdm import tqdm, trange
 
 from spartan_pong.config import N_OBJECTS, TOKEN_DIM
 from spartan_pong.data import load_npz
@@ -207,6 +207,7 @@ def train_vae(
     _save_vae_checkpoint(checkpoint_path, model, opt, metrics, config, steps - 1)
     (out_path / "metrics.json").write_text(json.dumps(metrics, indent=2, sort_keys=True))
     (out_path / "config.json").write_text(json.dumps(config, indent=2, sort_keys=True))
+    print(f"  VAE done — recon={metrics['recon']:.4f}, kl={metrics['kl']:.4f}")
     return metrics
 
 
@@ -220,7 +221,7 @@ def _encode_slots(
     inputs = object_inputs(images, masks)
     encoded = []
     model.eval()
-    for start in range(0, len(inputs), batch_size):
+    for start in tqdm(range(0, len(inputs), batch_size), desc="Encoding tokens", leave=False):
         x = torch.as_tensor(inputs[start : start + batch_size], dtype=torch.float32, device=device)
         mu, _ = model.encode(x)
         encoded.append(mu.cpu().numpy())
@@ -296,7 +297,7 @@ def export_reconstruction_sheet(
     # Convert the first sample_count frames into object slot inputs and reconstruct them through the VAE in batches
     inputs = object_inputs(data["image"][:sample_count], data["mask"][:sample_count])
     recon_chunks = []
-    for start in range(0, len(inputs), batch_size):
+    for start in tqdm(range(0, len(inputs), batch_size), desc="Reconstructing", leave=False):
         x = torch.as_tensor(inputs[start : start + batch_size], dtype=torch.float32, device=dev)
         recon_chunks.append(model(x)["recon"].cpu().numpy())
     recons = np.concatenate(recon_chunks, axis=0)
