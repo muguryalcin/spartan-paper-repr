@@ -1,0 +1,30 @@
+[project]
+name = "ceng502"
+version = "0.1.0"
+description = "SPARTAN reproduction on Interventional Pong"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",
+    "pillow>=10.0",
+    "pytest>=8.0",
+    "torch>=2.5",
+    "tqdm>=4.66",
+]
+
+[project.scripts]
+spartan-pong = "spartan_pong.cli:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["spartan_pong*"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
