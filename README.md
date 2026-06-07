@@ -12,6 +12,7 @@ Implementation details and results are discussed below.
 ## Paper and Method
 
 ![reconstruction-vae](reconstruction.png)
+
 Figure 1: VAE reconstruction example of the Interventional Pong dataset.
 
 SPARTAN is an object-centric Transformer world model. In Interventional Pong, each
@@ -105,6 +106,7 @@ Interpretation and ambiguity notes:
 The model training curves are shown here:
 
 ![training-curves](training-curves.png)
+
 Figure 2: Training curves of Transformer and SPARTAN models.
 
 ## Code Structure
