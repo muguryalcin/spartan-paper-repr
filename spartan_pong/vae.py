@@ -258,6 +258,9 @@ def encode_dataset_tokens(
         "split": data["split"],
         "token_source": np.asarray("object_vae"),
     }
+    for key in ("score_left", "score_right"):
+        if key in data:
+            out[key] = data[key]
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(out_path, **out)
 

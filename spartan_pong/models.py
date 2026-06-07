@@ -138,10 +138,17 @@ class SpartanModel(nn.Module):
         }
 
     @torch.no_grad()
-    def graph(self, x: Tensor, env: Tensor | None = None, include_env: bool = False) -> Tensor:
+    def graph(
+        self,
+        x: Tensor,
+        env: Tensor | None = None,
+        include_env: bool = False,
+        threshold: float | None = None,
+    ) -> Tensor:
         out = self.forward(x, env=env, hard=False)
-        # The paper
-        probs = (out["attention"] > self.cfg.attention_threshold).to(x.dtype)
+        if threshold is None:
+            threshold = self.cfg.attention_threshold
+        probs = (out["attention"] > threshold).to(x.dtype)
         paths = path_matrix(probs)
         parent_count = self.cfg.n_objects + int(include_env)
         return (paths[:, : self.cfg.n_objects, :parent_count] >= 1.0).to(torch.uint8)

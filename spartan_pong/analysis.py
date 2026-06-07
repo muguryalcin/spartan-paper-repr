@@ -44,9 +44,19 @@ def analyze_run(
     artifacts["final_metric_bars"] = str(metric_bars)
 
     test_tokens = run / "data" / "test_tokens.npz"
-    baseline = empty_graph_baseline(load_npz(test_tokens))
+    test_data = load_npz(test_tokens)
+    baseline = empty_graph_baseline(test_data)
+    object_baseline = (
+        empty_graph_baseline(test_data, graph_key="graph") if "graph" in test_data else baseline
+    )
     baseline_path = out / "empty_graph_baseline.json"
-    baseline_path.write_text(json.dumps(baseline, indent=2, sort_keys=True))
+    baseline_path.write_text(
+        json.dumps(
+            {"env_inclusive": baseline, "object_only": object_baseline},
+            indent=2,
+            sort_keys=True,
+        )
+    )
     artifacts["empty_graph_baseline"] = str(baseline_path)
 
     sweeps: dict[str, Any] = {}
@@ -65,6 +75,7 @@ def analyze_run(
         _summary_markdown(
             evals,
             baseline,
+            object_baseline,
             sweeps,
             resolved_batch_size=resolved_batch_size,
             max_batches=max_batches,
@@ -140,7 +151,7 @@ def _plot_training_curves(histories: dict[str, list[dict[str, Any]]], out: Path)
         ("active_edges", "target_edges", "Active vs Target Edges", "edges"),
         ("robust_pct_l2", "robust_pct", "Non-Causal Removal L2", "% change"),
         ("robust_pct_mse", None, "Non-Causal Removal MSE", "% change"),
-        ("lambda", None, "SPARTAN Lambda", "lambda"),
+        ("log_lambda", "lambda", "SPARTAN log(lambda)", "log(lambda)"),
         ("sparsity", None, "SPARTAN Sparsity", "path count"),
     ]
     for ax, (key, fallback, title, ylabel) in zip(axes_flat, specs, strict=True):
@@ -166,7 +177,7 @@ def _plot_history_metric(
     fallback: str | None = None,
 ) -> None:
     for model_name, rows in histories.items():
-        if key in {"lambda", "sparsity"} and model_name != "SPARTAN":
+        if key in {"lambda", "log_lambda", "sparsity"} and model_name != "SPARTAN":
             continue
         points = _history_points(rows, key, fallback=fallback)
         if points:
@@ -189,7 +200,10 @@ def _history_points(
     points = []
     for row in rows:
         value = row.get(key)
-        if value is None and fallback is not None:
+        if key == "log_lambda" and value is None and row.get("lambda") is not None:
+            raw_lambda = float(row["lambda"])
+            value = float(np.log(raw_lambda)) if raw_lambda > 0.0 else None
+        if value is None and fallback is not None and key != "log_lambda":
             value = row.get(fallback)
         step = row.get("step")
         if value is not None and step is not None:
@@ -274,9 +288,19 @@ def _metric(
     return None if value is None else float(value)
 
 
+def _baseline_row(label: str, metrics: dict[str, Any]) -> str:
+    return (
+        f"| {label} | {_fmt(float(metrics['shd']))} | "
+        f"{_fmt(float(metrics['active_edges']))} | {_fmt(float(metrics['target_edges']))} | "
+        f"{_fmt(float(metrics.get('tp', 0.0)))} | {_fmt(float(metrics.get('fp', 0.0)))} | "
+        f"{_fmt(float(metrics.get('fn', 0.0)))} |"
+    )
+
+
 def _summary_markdown(
     evals: dict[str, dict[str, Any] | None],
     baseline: dict[str, Any],
+    object_baseline: dict[str, Any],
     sweeps: dict[str, Any],
     resolved_batch_size: int,
     max_batches: int | None,
@@ -294,8 +318,8 @@ def _summary_markdown(
         "",
         "## Final And Best Metrics",
         "",
-        "| Checkpoint | Rollout L2 | One-step L2 | SHD | Active edges | Target edges | Removal L2 pct | Removal MSE pct |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| Checkpoint | Rollout L2 | One-step L2 | SHD selected | SHD@0.5 env | SHD@0.5 obj | TP | FP | FN | Removal L2 pct |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for label, metrics in evals.items():
         if metrics is None:
@@ -303,20 +327,21 @@ def _summary_markdown(
         lines.append(
             f"| {label} | {_fmt(_metric(metrics, 'rollout_l2', 'pred_l2'))} | "
             f"{_fmt(_metric(metrics, 'one_step_l2'))} | {_fmt(_metric(metrics, 'shd'))} | "
-            f"{_fmt(_metric(metrics, 'active_edges'))} | {_fmt(_metric(metrics, 'target_edges'))} | "
-            f"{_fmt(_metric(metrics, 'robust_pct_l2', 'robust_pct'))} | "
-            f"{_fmt(_metric(metrics, 'robust_pct_mse'))} |"
+            f"{_fmt(_metric(metrics, 'fixed_shd_0_5_env_inclusive', 'fixed_shd_0_5'))} | "
+            f"{_fmt(_metric(metrics, 'fixed_shd_0_5_object_only'))} | "
+            f"{_fmt(_metric(metrics, 'tp'))} | {_fmt(_metric(metrics, 'fp'))} | "
+            f"{_fmt(_metric(metrics, 'fn'))} | "
+            f"{_fmt(_metric(metrics, 'robust_pct_l2', 'robust_pct'))} |"
         )
     lines.extend(
         [
             "",
             "## Empty-Graph Baseline",
             "",
-            "| Metric | Value |",
-            "|---|---:|",
-            f"| SHD | {_fmt(float(baseline['shd']))} |",
-            f"| Active edges | {_fmt(float(baseline['active_edges']))} |",
-            f"| Target edges | {_fmt(float(baseline['target_edges']))} |",
+            "| Scope | SHD | Active edges | Target edges | TP | FP | FN |",
+            "|---|---:|---:|---:|---:|---:|---:|",
+            _baseline_row("Env-inclusive", baseline),
+            _baseline_row("Object-only", object_baseline),
             "",
         ]
     )
@@ -327,8 +352,10 @@ def _summary_markdown(
             [
                 "## Threshold Sweep",
                 "",
-                "| Model | Best threshold | Best SHD | Active edges | Target edges | Edge surplus |",
-                "|---|---:|---:|---:|---:|---:|",
+                "The threshold sweep is diagnostic/oracle-style and should not be headlined as graph recovery.",
+                "",
+                "| Model | Best threshold | Best SHD | Active edges | Target edges | TP | FP | FN | Edge surplus |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
             ]
         )
         for model_name, sweep in sweeps.items():
@@ -338,7 +365,9 @@ def _summary_markdown(
             lines.append(
                 f"| {model_name} | {_fmt(float(best['threshold']))} | "
                 f"{_fmt(float(best['shd']))} | {_fmt(float(best['active_edges']))} | "
-                f"{_fmt(float(best['target_edges']))} | {_fmt(float(best['edge_surplus']))} |"
+                f"{_fmt(float(best['target_edges']))} | {_fmt(float(best.get('tp', 0.0)))} | "
+                f"{_fmt(float(best.get('fp', 0.0)))} | {_fmt(float(best.get('fn', 0.0)))} | "
+                f"{_fmt(float(best['edge_surplus']))} |"
             )
         lines.append("")
     lines.extend(["## Interpretation", ""])

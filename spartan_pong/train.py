@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -11,7 +13,7 @@ from tqdm import trange
 
 from spartan_pong.config import ModelConfig, TrainConfig
 from spartan_pong.data import load_npz
-from spartan_pong.evaluate import evaluate_arrays
+from spartan_pong.evaluate import evaluate_arrays, representative_eval_indices
 from spartan_pong.models import build_model, checkpoint_payload
 
 
@@ -23,6 +25,50 @@ def _batch(
     y = torch.as_tensor(data["y"][idx], dtype=torch.float32, device=device)
     env = torch.as_tensor(data["env"][idx], dtype=torch.long, device=device)
     return x, y, env
+
+
+def _load_log_lambda(
+    payload: dict[str, Any], train_cfg: TrainConfig, device: torch.device
+) -> torch.Tensor:
+    if "log_lambda" in payload:
+        value = float(payload["log_lambda"])
+    else:
+        raw_lambda = float(payload.get("lambda", train_cfg.lambda_init))
+        if raw_lambda <= 0.0:
+            raw_lambda = train_cfg.lambda_init
+        value = math.log(raw_lambda)
+    return torch.tensor(value, dtype=torch.float32, device=device)
+
+
+def _safe_lambda_value(log_lambda: torch.Tensor) -> float | None:
+    value = float(log_lambda.detach().cpu())
+    if not math.isfinite(value) or value > 700.0:
+        return None
+    lambda_value = math.exp(value)
+    return lambda_value if math.isfinite(lambda_value) else None
+
+
+def _lagrange_state(log_lambda: torch.Tensor, moving_gap: torch.Tensor) -> dict[str, float]:
+    state = {
+        "log_lambda": float(log_lambda.detach().cpu()),
+        "moving_gap": float(moving_gap.detach().cpu()),
+    }
+    lambda_value = _safe_lambda_value(log_lambda)
+    if lambda_value is not None:
+        state["lambda"] = lambda_value
+    return state
+
+
+def _update_log_lambda(
+    log_lambda: torch.Tensor,
+    moving_gap: torch.Tensor,
+    mse: torch.Tensor,
+    target_loss: float,
+    alpha: float,
+) -> None:
+    gap = mse.detach() - target_loss
+    moving_gap.mul_(0.99).add_(0.01 * gap)
+    log_lambda.add_(math.log(alpha) + moving_gap)
 
 
 def train_model(
@@ -47,7 +93,11 @@ def train_model(
     model = build_model(model_type, model_cfg).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=train_cfg.lr)
     # Initialize training state
-    lagrange = torch.tensor(train_cfg.lambda_init, dtype=torch.float32, device=device)
+    if train_cfg.lambda_init <= 0.0:
+        raise ValueError("lambda_init must be positive")
+    if train_cfg.lagrangian_alpha <= 0.0:
+        raise ValueError("lagrangian_alpha must be positive")
+    log_lambda = torch.tensor(math.log(train_cfg.lambda_init), dtype=torch.float32, device=device)
     moving_gap = torch.tensor(0.0, dtype=torch.float32, device=device)
     checkpoint_path = out / "checkpoint.pt"
     start_step = 0
@@ -66,9 +116,7 @@ def train_model(
         start_step = int(payload.get("step", -1)) + 1
         last_metrics = dict(payload.get("metrics", {}))
         history = list(payload.get("history", []))
-        lagrange = torch.tensor(
-            float(payload.get("lambda", train_cfg.lambda_init)), dtype=torch.float32, device=device
-        )
+        log_lambda = _load_log_lambda(payload, train_cfg, device)
         moving_gap = torch.tensor(
             float(payload.get("moving_gap", 0.0)), dtype=torch.float32, device=device
         )
@@ -82,6 +130,9 @@ def train_model(
         "train_config": asdict(train_cfg),
     }
     (out / "config.json").write_text(json.dumps(config_payload, indent=2, sort_keys=True))
+    history_eval_indices = representative_eval_indices(
+        val, max_samples=train_cfg.batch_size * 8, seed=train_cfg.seed
+    )
 
     # Initialize best validation metric
     best_val = min(
@@ -99,7 +150,7 @@ def train_model(
         if model_type == "spartan":
             loss = (mse - train_cfg.target_loss) + train_cfg.sparsity_weight * out_dict[
                 "sparsity"
-            ] / lagrange.clamp_min(1e-6)
+            ] * torch.exp(-log_lambda)
         else:
             loss = mse
         # Backprop and optimize
@@ -111,14 +162,13 @@ def train_model(
         # Update Lagrange multiplier for Spartan to encourage meeting the target loss
         if model_type == "spartan":
             with torch.no_grad():
-                # Update the moving average of the gap between current loss and target loss
-                gap = mse.detach() - train_cfg.target_loss
-                # Update the moving gap with a decay factor (e.g., 0.99) to smooth it over time
-                moving_gap.mul_(0.99).add_(0.01 * gap)
-                # Update the Lagrange multiplier by scaling it with the exponential of the moving gap
-                lagrange.mul_(train_cfg.lagrangian_alpha * torch.exp(moving_gap).clamp(0.1, 10.0))
-                # Clamp the Lagrange multiplier to prevent it from becoming too small or too large, which can destabilize training
-                lagrange.clamp_(1e-4, 1e6)
+                _update_log_lambda(
+                    log_lambda,
+                    moving_gap,
+                    mse,
+                    train_cfg.target_loss,
+                    train_cfg.lagrangian_alpha,
+                )
 
         # Periodically evaluate on validation set and save checkpoints
         if step % max(1, train_cfg.eval_every) == 0 or step == train_cfg.steps - 1:
@@ -126,15 +176,16 @@ def train_model(
                 model,
                 val,
                 device=device,
-                max_batches=8,
                 batch_size=train_cfg.batch_size,
                 rollout=False,
+                indices=history_eval_indices,
             )
             last_metrics.update(
                 {
+                    **_lagrange_state(log_lambda, moving_gap),
+                    "eval_subset_size": float(len(history_eval_indices)),
                     "train_mse": float(mse.detach().cpu()),
                     "loss": float(loss.detach().cpu()),
-                    "lambda": float(lagrange.detach().cpu()),
                     "sparsity": float(out_dict["sparsity"].detach().cpu()),
                     "step": float(step),
                 }
@@ -156,8 +207,7 @@ def train_model(
                             "config": config_payload,
                             "optimizer_state": opt.state_dict(),
                             "step": step,
-                            "lambda": float(lagrange.detach().cpu()),
-                            "moving_gap": float(moving_gap.detach().cpu()),
+                            **_lagrange_state(log_lambda, moving_gap),
                         },
                     ),
                     out / "best_checkpoint.pt",
@@ -175,8 +225,7 @@ def train_model(
                         "config": config_payload,
                         "optimizer_state": opt.state_dict(),
                         "step": step,
-                        "lambda": float(lagrange.detach().cpu()),
-                        "moving_gap": float(moving_gap.detach().cpu()),
+                        **_lagrange_state(log_lambda, moving_gap),
                     },
                 ),
                 checkpoint_path,
@@ -202,8 +251,7 @@ def train_model(
                 "config": config_payload,
                 "optimizer_state": opt.state_dict(),
                 "step": train_cfg.steps - 1,
-                "lambda": float(lagrange.detach().cpu()),
-                "moving_gap": float(moving_gap.detach().cpu()),
+                **_lagrange_state(log_lambda, moving_gap),
             },
         ),
         checkpoint_path,

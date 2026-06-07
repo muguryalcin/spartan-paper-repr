@@ -182,15 +182,15 @@ def cmd_report(args: argparse.Namespace) -> None:
         "",
         "## Table 1 Subset",
         "",
-        "| Model | Rollout prediction error | One-step error | SHD |",
-        "|---|---:|---:|---:|",
-        f"| SPARTAN | {spartan['pred_l2']:.4f} | {spartan['one_step_l2']:.4f} | {spartan['shd']:.4f} |",
-        f"| Transformer | {transformer['pred_l2']:.4f} | {transformer['one_step_l2']:.4f} | {transformer['shd']:.4f} |",
+        "| Model | Rollout prediction error | One-step error | SHD selected | SHD@0.5 env | SHD@0.5 obj |",
+        "|---|---:|---:|---:|---:|---:|",
+        _table1_row("SPARTAN", spartan),
+        _table1_row("Transformer", transformer),
         "",
         "## Graph Edge Diagnostics",
         "",
-        "| Model | Predicted active edges | Target active edges | Edge surplus |",
-        "|---|---:|---:|---:|",
+        "| Model | Predicted active edges | Target active edges | TP | FP | FN | Edge surplus |",
+        "|---|---:|---:|---:|---:|---:|---:|",
         _graph_edge_row("SPARTAN", spartan),
         _graph_edge_row("Transformer", transformer),
         "",
@@ -199,7 +199,7 @@ def cmd_report(args: argparse.Namespace) -> None:
         "| Model | Threshold | Selection method |",
         "|---|---:|---|",
         f"| SPARTAN | {_fmt_optional(spartan.get('graph_threshold'))} | Bernoulli/path threshold from model config |",
-        f"| Transformer | {_fmt_optional(transformer.get('graph_threshold'))} | Best validation SHD over 101 attention thresholds |",
+        f"| Transformer | {_fmt_optional(transformer.get('graph_threshold'))} | Best-threshold SHD sweep, diagnostic/oracle-style |",
         "",
         "## Table 2 Subset",
         "",
@@ -213,10 +213,10 @@ def cmd_report(args: argparse.Namespace) -> None:
         "| Model | Metric | Run | Paper | Delta |",
         "|---|---|---:|---:|---:|",
         f"| SPARTAN | Rollout prediction error | {spartan['pred_l2']:.4f} | {spartan_targets['pred_l2']:.4f} | {spartan['pred_l2'] - spartan_targets['pred_l2']:.4f} |",
-        f"| SPARTAN | SHD | {spartan['shd']:.4f} | {spartan_targets['shd']:.4f} | {spartan['shd'] - spartan_targets['shd']:.4f} |",
+        f"| SPARTAN | SHD selected-threshold | {spartan['shd']:.4f} | {spartan_targets['shd']:.4f} | {spartan['shd'] - spartan_targets['shd']:.4f} |",
         f"| SPARTAN | Non-causal removal pct | {spartan['robust_pct']:.4f} | {spartan_targets['robust_pct']:.4f} | {spartan['robust_pct'] - spartan_targets['robust_pct']:.4f} |",
         f"| Transformer | Rollout prediction error | {transformer['pred_l2']:.4f} | {transformer_targets['pred_l2']:.4f} | {transformer['pred_l2'] - transformer_targets['pred_l2']:.4f} |",
-        f"| Transformer | SHD | {transformer['shd']:.4f} | {transformer_targets['shd']:.4f} | {transformer['shd'] - transformer_targets['shd']:.4f} |",
+        f"| Transformer | SHD selected-threshold | {transformer['shd']:.4f} | {transformer_targets['shd']:.4f} | {transformer['shd'] - transformer_targets['shd']:.4f} |",
         f"| Transformer | Non-causal removal pct | {transformer['robust_pct']:.4f} | {transformer_targets['robust_pct']:.4f} | {transformer['robust_pct'] - transformer_targets['robust_pct']:.4f} |",
         "",
         "## Per-Environment Diagnostics",
@@ -277,12 +277,25 @@ def _fmt_optional(value: Any) -> str:
     return "" if value is None else f"{float(value):.4f}"
 
 
+def _table1_row(model_name: str, metrics: dict[str, Any]) -> str:
+    fixed_env = metrics.get("fixed_shd_0_5_env_inclusive", metrics.get("fixed_shd_0_5"))
+    return (
+        f"| {model_name} | {_fmt_optional(metrics.get('pred_l2'))} | "
+        f"{_fmt_optional(metrics.get('one_step_l2'))} | {_fmt_optional(metrics.get('shd'))} | "
+        f"{_fmt_optional(fixed_env)} | {_fmt_optional(metrics.get('fixed_shd_0_5_object_only'))} |"
+    )
+
+
 def _graph_edge_row(model_name: str, metrics: dict[str, float]) -> str:
     # Formats a row for the graph edge diagnostics table, calculating the surplus of active edges over target edges if both are available.
     active = metrics.get("active_edges")
     target = metrics.get("target_edges")
     surplus = None if active is None or target is None else float(active) - float(target)
-    return f"| {model_name} | {_fmt_optional(active)} | {_fmt_optional(target)} | {_fmt_optional(surplus)} |"
+    return (
+        f"| {model_name} | {_fmt_optional(active)} | {_fmt_optional(target)} | "
+        f"{_fmt_optional(metrics.get('tp'))} | {_fmt_optional(metrics.get('fp'))} | "
+        f"{_fmt_optional(metrics.get('fn'))} | {_fmt_optional(surplus)} |"
+    )
 
 
 def _metric_by_env(per_env: dict[str, Any], key: str, fallback: str | None = None) -> dict[str, Any]:
