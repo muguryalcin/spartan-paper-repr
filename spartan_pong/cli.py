@@ -7,6 +7,7 @@ from typing import Any
 
 import torch
 
+from spartan_pong.analysis import analyze_run
 from spartan_pong.config import ModelConfig, TrainConfig
 from spartan_pong.data import generate_dataset
 from spartan_pong.evaluate import evaluate_checkpoint, one_step_mse_checkpoint
@@ -257,6 +258,18 @@ def cmd_report(args: argparse.Namespace) -> None:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(report)
     print(report)
+
+
+def cmd_analyze_run(args: argparse.Namespace) -> None:
+    artifacts = analyze_run(
+        args.run_dir,
+        out_dir=args.out_dir,
+        device=args.device,
+        batch_size=args.batch_size,
+        max_batches=args.max_batches,
+        skip_threshold_sweep=args.skip_threshold_sweep,
+    )
+    print(json.dumps(artifacts, indent=2, sort_keys=True))
 
 
 def _fmt_optional(value: Any) -> str:
@@ -693,6 +706,15 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--transformer", required=True)
     report.add_argument("--out")
     report.set_defaults(func=cmd_report)
+
+    analyze = sub.add_parser("analyze-run")
+    analyze.add_argument("--run-dir", required=True)
+    analyze.add_argument("--out-dir")
+    analyze.add_argument("--device", default="cpu")
+    analyze.add_argument("--batch-size", type=int)
+    analyze.add_argument("--max-batches", type=int)
+    analyze.add_argument("--skip-threshold-sweep", action="store_true")
+    analyze.set_defaults(func=cmd_analyze_run)
 
     repro = sub.add_parser("run-reproduction")
     _add_reproduction_args(repro)

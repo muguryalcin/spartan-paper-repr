@@ -53,9 +53,112 @@ def _edge_counts(graph: np.ndarray) -> np.ndarray:
     return graph_copy.sum(axis=(1, 2)).astype(np.float64)
 
 
+def _edge_counts_tensor(graph: torch.Tensor) -> torch.Tensor:
+    graph_copy = graph.clone()
+    diag = torch.arange(N_OBJECTS, device=graph.device)
+    graph_copy[:, diag, diag] = 0
+    return graph_copy.sum(dim=(1, 2)).to(torch.float64)
+
+
 def _threshold_candidates() -> np.ndarray:
     # Generate candidate thresholds for transformer attention to graph conversion. We include 0.0 and 1.0 as edge cases, and 99 values evenly spaced between them.
     return np.concatenate(([0.0], np.linspace(0.01, 0.99, 99), [1.0])).astype(np.float32)
+
+
+def empty_graph_baseline(data: dict[str, np.ndarray]) -> dict[str, Any]:
+    graph_key = "graph_with_env" if "graph_with_env" in data else "graph"
+    target = data[graph_key].astype(np.uint8)
+    env = data["env"].astype(int)
+    empty = np.zeros_like(target, dtype=np.uint8)
+    shd_records = [
+        (int(env_id), float(structural_hamming_distance(pred, truth)))
+        for env_id, pred, truth in zip(env.tolist(), empty, target, strict=True)
+    ]
+    active_records = [
+        (int(env_id), float(value))
+        for env_id, value in zip(env.tolist(), _edge_counts(empty).tolist(), strict=True)
+    ]
+    target_records = [
+        (int(env_id), float(value))
+        for env_id, value in zip(env.tolist(), _edge_counts(target).tolist(), strict=True)
+    ]
+    shd_values = [value for _, value in shd_records]
+    active_values = [value for _, value in active_records]
+    target_values = [value for _, value in target_records]
+    return {
+        "active_edges": float(np.mean(active_values)) if active_values else float("nan"),
+        "num_transitions": float(len(target)),
+        "per_env": {
+            "active_edges": _mean_by_env(active_records),
+            "shd": _mean_by_env(shd_records),
+            "target_edges": _mean_by_env(target_records),
+        },
+        "shd": float(np.mean(shd_values)) if shd_values else float("nan"),
+        "target_edges": float(np.mean(target_values)) if target_values else float("nan"),
+    }
+
+
+@torch.no_grad()
+def graph_threshold_sweep_arrays(
+    model: nn.Module,
+    data: dict[str, np.ndarray],
+    device: torch.device,
+    batch_size: int = 256,
+    thresholds: np.ndarray | None = None,
+    max_batches: int | None = None,
+) -> dict[str, Any]:
+    model.eval()
+    candidates = (
+        _threshold_candidates()
+        if thresholds is None
+        else np.asarray(thresholds, dtype=np.float32)
+    )
+    if candidates.ndim != 1:
+        raise ValueError(f"expected one-dimensional thresholds, got {candidates.shape}")
+    shd_totals = np.zeros_like(candidates, dtype=np.float64)
+    active_totals = np.zeros_like(candidates, dtype=np.float64)
+    target_total = 0.0
+    count = 0
+    for x_np, _, env_np, graph_np in _iter_batches(data, batch_size, max_batches=max_batches):
+        x = torch.as_tensor(x_np, dtype=torch.float32, device=device)
+        env = torch.as_tensor(env_np, dtype=torch.long, device=device)
+        attention = model(x, env=env, hard=False)["attention"]
+        include_env = graph_np.shape[-1] == N_OBJECTS + 1
+        parent_count = N_OBJECTS + int(include_env)
+        target = torch.as_tensor(graph_np, dtype=torch.uint8, device=device)
+        target_total += float(_edge_counts_tensor(target).sum().cpu().item())
+        count += int(graph_np.shape[0])
+        diag = torch.arange(N_OBJECTS, device=device)
+        for idx, threshold in enumerate(candidates):
+            adj = (attention > float(threshold)).to(x.dtype)
+            graph = (path_matrix(adj)[:, :N_OBJECTS, :parent_count] >= 1.0).to(torch.uint8)
+            mismatch = graph != target
+            mismatch[:, diag, diag] = False
+            shd_totals[idx] += float(mismatch.sum().cpu().item())
+            active_totals[idx] += float(_edge_counts_tensor(graph).sum().cpu().item())
+    target_edges = float(target_total / count) if count else float("nan")
+    records = []
+    for threshold, shd_total, active_total in zip(
+        candidates.tolist(), shd_totals.tolist(), active_totals.tolist(), strict=True
+    ):
+        active_edges = float(active_total / count) if count else float("nan")
+        records.append(
+            {
+                "active_edges": active_edges,
+                "edge_surplus": active_edges - target_edges,
+                "shd": float(shd_total / count) if count else float("nan"),
+                "target_edges": target_edges,
+                "threshold": float(threshold),
+            }
+        )
+    best = min(records, key=lambda item: item["shd"]) if records else None
+    return {
+        "best": best,
+        "max_batches": max_batches,
+        "model_type": str(getattr(model, "model_type", "unknown")),
+        "num_transitions": float(count),
+        "thresholds": records,
+    }
 
 
 @torch.no_grad()
@@ -376,6 +479,27 @@ def evaluate_checkpoint(
         }
         Path(out_path).write_text(json.dumps(payload, indent=2, sort_keys=True))
     return metrics
+
+
+def graph_threshold_sweep_checkpoint(
+    checkpoint: str | Path,
+    data_path: str | Path,
+    device: str = "cpu",
+    batch_size: int = 256,
+    thresholds: np.ndarray | None = None,
+    max_batches: int | None = None,
+) -> dict[str, Any]:
+    dev = torch.device(device)
+    model = load_checkpoint(str(checkpoint), map_location=dev).to(dev)
+    data = load_npz(data_path)
+    return graph_threshold_sweep_arrays(
+        model,
+        data,
+        device=dev,
+        batch_size=batch_size,
+        thresholds=thresholds,
+        max_batches=max_batches,
+    )
 
 
 def one_step_mse_checkpoint(
