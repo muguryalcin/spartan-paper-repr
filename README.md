@@ -23,18 +23,14 @@ Transformer-based world model predicts the next object tokens.
 The key idea of the paper is that dense attention in world models can lead to spurious correlations and make it harder to reconstruct the underlying causal graph. SPARTAN instead learns causal masks as hard attention edges: if two objects are not temporally related, the model should not attend to every object at every step. The paper shows that SPARTAN's hard attention leads to better causal graph recovery and more robust dynamics predictions under interventions.
 
 The main difference between SPARTAN and standard Transformer-based models is **hard sparse attention**. SPARTAN samples binary attention
-edges from `Bernoulli(sigmoid(q_i^T k_j))`, uses those edges as attention masks,
-and penalizes unnecessary paths with a Lagrangian sparsity term. Across multiple
-layers, the path matrix is interpreted as a learned causal parent graph: if token
-`j` has a path to prediction `i`, then `j` is treated as a parent of `i`.
+edges from `Bernoulli(sigmoid(q_i^T k_j))`, uses those edges as hard attention masks. A Lagrangian objective then encourages the learned graph to be sparse while keeping SPARTAN's prediction loss close to the dense Transformer's loss. Across multiple layers, the path matrix is interpreted as a learned causal parent graph: if token `j` has a path to prediction `i`, then `j` is treated as a parent of `i`.
 
 For interventions, the model appends an environment/intervention token. A path
-from this token to an object marks that object as an intervention target. The
-baseline is a dense Transformer trained on the same object tokens.
+from this token to an object marks that object as an intervention target. The paper uses Transformer model trained on the same tokens as the baseline.
 
 ## Reproduction Scope
 
-The aim of this reproduction was to implement the core SPARTAN method, evaluate it on the Interventional Pong dataset, and reproduce the main results of Table 1 and Table 2.
+The aim of this reproduction was to implement the SPARTAN model, evaluate it on the Interventional Pong dataset, and reproduce the main results of Table 1 and Table 2.
 
 Implemented and evaluated:
 
@@ -47,17 +43,16 @@ Not implemented:
 - CREATE experiments.
 - Traffic / Waymo / MTR experiments.
 - ACD, Sparse ACD, Global Graph, or Local Attention baselines.
-- Few-shot adaptation on unseen interventions.
 
 ## Results
 
-For the experiments, I completed two full runs and several smoke and small-scale runs for tuning. The first run used a batch size of 1024 and trained for 1M steps, which is lower than the paper's 4M steps. The models converged well, but after a point they started to diverge, so the run was stopped at 1M steps and the best checkpoints were used. The second run used a smaller batch size of 512 and trained for the same number of steps, but the models performed worse than in the first run.
+For the experiments, I completed two full runs, several smoke and small-scale runs for tuning. The first run used a batch size of 1024 and trained for 1M steps, which is lower than the paper's 4M steps. The models converged well, but after a point they started to diverge, so the run was stopped at 1M steps and the best checkpoints were used. The second full run used a smaller batch size of 512 and trained for the same number of steps, but the models performed worse than in the first run.
 
-In the paper, many implementation and experiment details are ambiguous. Therefore, the reproduction involved tuning and debugging to find settings that led to good performance. The main ambiguities were:
-- The paper mentions that the Interventional Pong dataset was modified and that new interventions were added, but it does not specify exactly how the dataset was modified. It only describes what each intervention does, not the specific constants or parameters of the interventions. Therefore, I had to make assumptions and tune the intervention parameters to get good performance.
-- The paper does not specify how they aggregate the rollout prediction error across the multi-step rollout.
-- The paper does not describe the architecture details of the masked-object VAE, which is a crucial component for the dynamics models' performance. I had to make assumptions and tune the VAE architecture to get good performance.
-- The paper does not fully specify several training details that materially affect reproduction, including batch size, input/token normalization, gradient clipping, and learning-rate scheduling.
+In the paper, many implementation and experiment details are ambiguous. Therefore, the reproduction involved tuning and debugging to find settings that led to best performance possible however I couldn't fully reproduce the papers results. The main ambiguities were:
+- The paper mentions that the Interventional Pong dataset was modified and new interventions were added, but it does not specify exactly how the dataset was modified. It only describes what each intervention does, but not the specific constants or parameters of the interventions. Therefore, I had to make assumptions.
+- The paper does not specify how they aggregate the rollout prediction error across the multi-step rollouts.
+- The paper does not describe the architecture details of the masked-object VAE, which is a crucial component for the dynamics models' performance. 
+- The paper does not fully specify several training details that affect reproduction such as including batch size, input/token normalization, gradient clipping, and learning-rate scheduling.
 
 ### Original Paper Results
 
@@ -86,13 +81,12 @@ These are the best-checkpoint results from the completed run:
 
 Interpretation and ambiguity notes:
 
-- We reproduce the main Table 2 results: SPARTAN is much less sensitive than
-  Transformer to removing non-causal objects, shown by the much smaller L2 and MSE
-  percentage changes after removal.
 - SPARTAN has better rollout prediction error in our completed run. The paper's
   prediction error uses token-space L2 error, but does not specify the exact
   aggregation over rollout steps. We report mean L2 error per rollout step.
-- Transformer has better one-step prediction error.
+- We reproduce the main Table 2 results: SPARTAN is much less sensitive than
+  Transformer to removing non-causal objects, shown by the much smaller L2 and MSE
+  percentage changes after removal.
 - In the paper, the Transformer threshold is selected to minimize SHD using
   ground-truth graphs. With that paper-style threshold selection, our completed
   run does **not** reproduce the paper's SPARTAN-over-Transformer SHD result.
@@ -138,8 +132,7 @@ For a local CPU/dev environment:
 uv sync
 ```
 
-On GPUs, avoid `uv sync` if the environment already has a working CUDA
-PyTorch install because it may cause a mismatch between the GPU's supported CUDA/Torch version and this repository's dependencies. You can manually install PyTorch with the correct CUDA version, then install this repository's other dependencies without reinstalling PyTorch.
+On GPUs, avoid `uv sync` if the environment already has a working CUDA/PyTorch install because it may cause a mismatch between the GPU's supported CUDA/Torch version and this repository's dependencies. You can manually install PyTorch with the correct CUDA version, then install this repository's other dependencies without reinstalling PyTorch.
 Example GPU-safe setup if needed:
 
 ```bash
