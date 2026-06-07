@@ -124,7 +124,8 @@ scripts/          Small debugging utilities
 
 ## Installation
 
-The project uses Python `>=3.11` and `uv`.
+The project uses Python `>=3.11` and `uv` for the virtual environment.
+You can find the details for uv in: https://docs.astral.sh/uv/getting-started/installation/
 
 For a local CPU/dev environment:
 
