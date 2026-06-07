@@ -125,8 +125,6 @@ spartan_pong/
   config.py       Constants and dataclasses
   preflight.py    Runtime/storage estimates
 
-tests/            Pytest suite
-docs/             Notes, final-run prep, and experiment interpretation
 scripts/          Small debugging utilities
 ```
 
